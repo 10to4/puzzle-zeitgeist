@@ -538,10 +538,77 @@ pub fn main() {
 
     /* This is how the serialized proofs, nullifiers and commitments were created. */
     // serialize();
+    
 
     /* Implement your attack here, to find the index of the encrypted message */
 
-    let secret = Fr::from(0u64);
+    use halo2_proofs::poly::kzg::commitment::{KZGCommitmentScheme, ParamsKZG};
+    use halo2curves::bn256::Bn256;
+    use halo2_proofs::transcript::{Transcript, TranscriptRead};
+    use halo2_proofs::arithmetic::lagrange_interpolate;
+    use halo2curves::bn256::G1Affine;
+    use halo2_proofs::arithmetic::eval_polynomial;
+
+    // Generate pk/vk
+    let setup_rng = ChaCha20Rng::from_seed([1u8; 32]);
+    let params = ParamsKZG::<Bn256>::setup(K, setup_rng);
+
+    let pk = keygen::<KZGCommitmentScheme<_>>(&params);
+    let vk = pk.get_vk();
+
+    let mut points = Vec::new();
+    let mut evals = Vec::new();
+    // Read the l(x) from proof for the second column for advice
+    for i in 0..64 {
+        let (proof, nullifier, commitment) = from_serialized(i);
+
+        let mut transcript: Blake2bRead<&[u8], G1Affine, Challenge255<G1Affine>> = Blake2bRead::<&[u8], G1Affine, Challenge255<G1Affine>>::init(&proof);
+        vk.hash_into(&mut transcript).unwrap();
+        transcript.common_scalar(nullifier).unwrap();
+        transcript.common_scalar(commitment).unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.squeeze_challenge_scalar::<()>();
+        transcript.squeeze_challenge_scalar::<()>();
+        transcript.squeeze_challenge_scalar::<()>();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.squeeze_challenge_scalar::<()>();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        transcript.read_point().unwrap();
+        // Read the challenge x from transcript
+        let x = transcript.squeeze_challenge().get_scalar();
+        transcript.read_scalar().unwrap();
+        // Read second column's eval l(x) from proof
+        let eval = transcript.read_scalar().unwrap();
+        points.push(x);
+        evals.push(eval);
+    }
+    // Add one more point/eval pair
+    // The order is 64, so we need 65 pairs
+    // In this colum, l(\omega^0) = 0
+    points.push(Fr::one());
+    evals.push(Fr::zero());
+
+    // Evaluate the polynomial by lagrange interpolation
+    let poly = lagrange_interpolate(&points, &evals);
+    let omega = vk.get_domain().get_omega();
+
+    // In this colum, l(\omega^2) = l(\omega^3) = l(\omega^4) = secret
+    let secret = eval_polynomial(&poly, omega.pow([2]));
     let secret_commitment = poseidon_base::primitives::Hash::<
         _,
         P128Pow5T3Compact<Fr>,
@@ -556,6 +623,7 @@ pub fn main() {
     }
     /* End of attack */
 }
+
 
 const PUZZLE_DESCRIPTION: &str = r"
 A few years ago, Bob signed up to SuperCoolAirdrop™.
